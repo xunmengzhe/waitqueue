@@ -87,6 +87,8 @@ func (w *WaitQueue) worker() {
 					if !time.Now().Before(wit.timeout) { //timeout
 						w.ltask.Remove(lit)
 						wit.using = false
+						wit.litem = nil
+						wit.wq = nil
 						w.gopool.AddWorker(wit.data, wit.handler)
 						continue
 					} else {
@@ -176,35 +178,26 @@ func (w *WaitQueue) Add(data interface{}, timeout time.Duration, handler Timeout
 		handler: handler,
 		timeout: time.Now().Add(timeout),
 	}
-	if w.ltask.Len() == 0 {
-		lit2 := w.ltask.PushBack(wit)
-		wit.litem = lit2
-		w.timer.Reset(timeout)
-	} else {
-		leit := w.ltask.Back()
-		lbit := w.ltask.Front()
-		lit := lbit
-		for {
-			wit2 := lit.Value.(*WaitItem)
-			if wit.timeout.Before(wit2.timeout) {
-				lit2 := w.ltask.InsertBefore(wit, lit)
-				wit.litem = lit2
-				break
-			}
-			if lit == leit {
-				lit2 := w.ltask.PushBack(wit)
-				wit.litem = lit2
-				break
-			}
-			lit = lit.Next()
+	lbit := w.ltask.Front()
+	lit := lbit
+	for {
+		if lit == nil {
+			wit.litem = w.ltask.PushBack(wit)
+			break
 		}
-		if w.ltask.Front() != lbit { //新的waitItem插入到了队列头部，所以要重置定时器
-			duration := wit.timeout.Sub(time.Now())
-			if duration < 0 {
-				duration = 0
-			}
-			w.timer.Reset(duration) //此处一定要重新计算时间，因为在循环期间时间在流逝
+		wit2 := lit.Value.(*WaitItem)
+		if wit.timeout.Before(wit2.timeout) {
+			wit.litem = w.ltask.InsertBefore(wit, lit)
+			break
 		}
+		lit = lit.Next()
+	}
+	if w.ltask.Front() != lbit { //新的waitItem插入到了队列头部，所以要重置定时器
+		duration := wit.timeout.Sub(time.Now())
+		if duration < 0 {
+			duration = 0
+		}
+		w.timer.Reset(duration) //此处一定要重新计算时间，因为在循环期间时间在流逝
 	}
 	return wit, nil
 }
@@ -255,38 +248,30 @@ func (w *WaitQueue) resetItem(item *WaitItem, timeout time.Duration) error {
 		return fmt.Errorf("Invalid wait queue.")
 	}
 	defer w.put()
-	if w.ltask.Len() <= 0 {
-		return fmt.Errorf("Invalid WaitItem object.")
+	lbit := w.ltask.Front()
+	w.ltask.Remove(item.litem)
+	item.timeout = time.Now().Add(timeout)
+	lit := w.ltask.Front()
+	for {
+		if lit == nil {
+			item.litem = w.ltask.PushBack(item)
+			break
+		}
+		item2 := lit.Value.(*WaitItem)
+		if item.timeout.Before(item2.timeout) {
+			item.litem = w.ltask.InsertBefore(item, lit)
+			break
+		}
+		lit = lit.Next()
 	}
-	if w.ltask.Len() == 1 { //只有一个item
-		item.timeout = time.Now().Add(timeout)
-		w.timer.Reset(timeout)
-	} else {
-		lbit := w.ltask.Front() //一定要在remove前获取lbit
-		w.ltask.Remove(item.litem)
-		leit := w.ltask.Back() //一定要在remove后获取leit
-		lit := w.ltask.Front()
-		for {
-			item2 := lit.Value.(*WaitItem)
-			if item.timeout.Before(item2.timeout) {
-				lit2 := w.ltask.InsertBefore(item, lit)
-				item.litem = lit2
-				break
-			}
-			if lit == leit {
-				lit2 := w.ltask.PushBack(item)
-				item.litem = lit2
-				break
-			}
-			lit = lit.Next()
+	if lbit != w.ltask.Front() || w.ltask.Front() == item.litem { //队列头部改变了，所以需要重置定时器
+		item2 := w.ltask.Front()
+		wi := item2.Value.(*WaitItem)
+		duration := wi.timeout.Sub(time.Now())
+		if duration < 0 {
+			duration = 0
 		}
-		if w.ltask.Front() != lbit { //队列头部已经变化，所以要重置定时器
-			duration := item.timeout.Sub(time.Now())
-			if duration < 0 {
-				duration = 0
-			}
-			w.timer.Reset(duration) //此处一定要重新计算时间，因为在循环期间时间在流逝
-		}
+		w.timer.Reset(duration)
 	}
 	return nil
 }
